@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ko">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>Virtual Wi-Fi Chat</title>
+	<style>
+		body{font-family:system-ui,sans-serif;max-width:760px;margin:24px auto;padding:0 14px}
+		#messages{height:420px;overflow:auto;border:1px solid #aaa;padding:10px}
+		.message{margin:8px 0;padding:8px;border-bottom:1px solid #ddd}
+		.meta{font-size:12px;opacity:.65}
+		input,button{font-size:16px;padding:8px;margin:4px 0}
+		#text{width:70%}
+	</style>
+</head>
+<body>
+	<h1>Virtual Wi-Fi Chat</h1>
+	<p>하나의 DB row를 가상 무선 매체처럼 사용하는 채팅 프로토타입</p>
+	<input id="url" placeholder="Supabase URL" style="width:100%">
+	<input id="key" placeholder="Supabase anon/public key" style="width:100%">
+	<input id="mac" placeholder="내 MAC 주소">
+	<button id="connect">연결</button>
+	<div id="status">연결되지 않음</div>
+	<div id="messages"></div>
+	<form id="form"><input id="text" maxlength="500" placeholder="메시지"><button>전송</button></form>
+	<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+	<script>
+		let sb=null;
+		let cell=[];
+		let channel=null;
+		const $=id=>document.getElementById(id);
+		$('mac').value=crypto.randomUUID().replaceAll('-','').slice(0,12).toUpperCase();
+		function render(){
+			$('messages').replaceChildren();
+			for(const frame of cell){
+				if(frame.type!=='DATA')continue;
+				const box=document.createElement('div');
+				box.className='message';
+				const meta=document.createElement('div');
+				meta.className='meta';
+				meta.textContent=frame.src+' • seq '+frame.seq;
+				const data=document.createElement('div');
+				data.textContent=frame.data;
+				box.append(meta,data);
+				$('messages').append(box);
+			}
+			$('messages').scrollTop=$('messages').scrollHeight;
+		}
+		async function readCell(){
+			const {data,error}=await sb.from('virtual_wifi').select('frames').eq('id',1).single();
+			if(error){$('status').textContent='셀 읽기 실패: '+error.message;return false;}
+			cell=data.frames||[];render();return true;
+		}
+		async function connect(){
+			if(!$('url').value.trim()||!$('key').value.trim()){ $('status').textContent='Supabase URL과 anon key를 입력하세요.';return; }
+			sb=window.supabase.createClient($('url').value.trim(),$('key').value.trim());
+			if(!await readCell())return;
+			if(channel)await sb.removeChannel(channel);
+			channel=sb.channel('virtual-wifi-cell').on('postgres_changes',{event:'UPDATE',schema:'public',table:'virtual_wifi',filter:'id=eq.1'},payload=>{cell=payload.new.frames||[];render();}).subscribe(status=>{$('status').textContent=status==='SUBSCRIBED'?'가상 Wi-Fi 연결됨 • CELL 1':'Realtime: '+status;});
+		}
+		$('connect').onclick=connect;
+		$('form').onsubmit=async e=>{
+			e.preventDefault();
+			if(!sb)return;
+			const text=$('text').value.trim();if(!text)return;
+			const frame={src:$('mac').value,dst:'FF:FF:FF:FF:FF:FF',type:'DATA',seq:Date.now(),data:text,ts:new Date().toISOString()};
+			const next=[...cell,frame].slice(-100);
+			const {error}=await sb.from('virtual_wifi').update({frames:next}).eq('id',1);
+			if(error){$('status').textContent='전송 실패: '+error.message;return;}
+			cell=next;render();$('text').value='';
+		};
+	</script>
+</body>
+</html>
