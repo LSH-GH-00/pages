@@ -1,44 +1,72 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ko">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Virtual Wi-Fi P2P Chat</title>
-<style>
-body{font-family:sans-serif;max-width:800px;margin:30px auto;padding:0 15px}#status{padding:10px;border:1px solid #888;margin-bottom:15px}#messages{border:1px solid #888;min-height:300px;padding:10px;overflow-y:auto}.message{margin:8px 0;padding:8px;border-bottom:1px solid #aaa}.mine{background:#eee}.meta{font-size:.8em;opacity:.7}#sendForm{display:flex;gap:8px;margin-top:15px}#message{flex:1;padding:10px}button{padding:10px 15px}button:disabled{opacity:.5}code{word-break:break-all}
-</style>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>Virtual Wi-Fi Chat</title>
+	<style>
+		body{font-family:system-ui,sans-serif;max-width:760px;margin:24px auto;padding:0 14px}
+		#messages{height:420px;overflow:auto;border:1px solid #aaa;padding:10px}
+		.message{margin:8px 0;padding:8px;border-bottom:1px solid #ddd}
+		.meta{font-size:12px;opacity:.65}
+		input,button{font-size:16px;padding:8px;margin:4px 0}
+		#text{width:70%}
+	</style>
 </head>
 <body>
-<h1>Virtual Wi-Fi P2P Chat</h1>
-<div id="status">연결 중...</div>
-<p>Cell: <strong>1</strong></p>
-<p>MAC: <code id="mac"></code></p>
-<div id="messages"></div>
-<form id="sendForm">
-<input id="message" type="text" placeholder="메시지 입력" autocomplete="off" required>
-<button type="submit">전송</button>
-</form>
-<script>
-const SUPABASE_URL="https://uhqdbmofvrontpgtzlxv.supabase.co";
-const SUPABASE_KEY="sb_publishable_pY5uodEIyqFilDstsiV6zA_UUi2yDTz";
-const CELL_ID=1;
-const REST_URL=SUPABASE_URL+"/rest/v1/virtual_wifi";
-const RPC_URL=SUPABASE_URL+"/rest/v1/rpc/append_virtual_wifi_frame";
-const BROADCAST="FF:FF:FF:FF:FF:FF";
-const macKey="virtual_wifi_mac";
-let mac=localStorage.getItem(macKey);
-if(!mac){const b=crypto.getRandomValues(new Uint8Array(6));mac=Array.from(b).map(x=>x.toString(16).padStart(2,"0")).join(":");localStorage.setItem(macKey,mac)}
-document.getElementById("mac").textContent=mac;
-const seen=new Set();
-function headers(){return {apikey:SUPABASE_KEY,"Content-Type":"application/json",Accept:"application/json"}}
-async function readCell(){const r=await fetch(REST_URL+"?id=eq."+CELL_ID+"&select=id,frames&_="+Date.now(),{headers:headers(),cache:"no-store"});if(!r.ok)throw Error("읽기 오류 "+r.status+": "+await r.text());const a=await r.json();if(!a.length)throw Error("CELL 1이 없습니다.");return a[0].frames||[]}
-function frameId(f){return f&&f.sequence?String(f.sequence):JSON.stringify(f)}
-function showFrame(f){if(!f||f.type!=="DATA")return;const id=frameId(f);if(seen.has(id))return;seen.add(id);const item=document.createElement("div");item.className="message"+(f.source===mac?" mine":"");const meta=document.createElement("div");meta.className="meta";meta.textContent=(f.source===mac?"나":"상대")+" · "+f.source+" · "+new Date(f.time).toLocaleTimeString();const text=document.createElement("div");text.textContent=f.data;item.append(meta,text);document.getElementById("messages").appendChild(item);const box=document.getElementById("messages");box.scrollTop=box.scrollHeight}
-async function receive(){try{const frames=await readCell();for(const f of frames)showFrame(f);document.getElementById("status").textContent="연결됨 · Virtual Wi-Fi CELL 1"}catch(e){console.error(e);document.getElementById("status").textContent="수신 오류: "+e.message}}
-async function sendFrame(f){const r=await fetch(RPC_URL,{method:"POST",headers:headers(),body:JSON.stringify({p_frame:f})});const body=await r.text();if(!r.ok)throw Error("전송 오류 "+r.status+": "+body);let result;try{result=body?JSON.parse(body):null}catch(e){}if(result===false)throw Error("서버가 프레임 추가를 거부했습니다.")}
-document.getElementById("sendForm").addEventListener("submit",async e=>{e.preventDefault();const input=document.getElementById("message"),button=e.currentTarget.querySelector("button"),text=input.value.trim();if(!text)return;button.disabled=true;document.getElementById("status").textContent="전송 중...";const f={version:1,type:"DATA",source:mac,destination:BROADCAST,sequence:crypto.randomUUID(),data:text,time:new Date().toISOString()};try{await sendFrame(f);showFrame(f);input.value="";document.getElementById("status").textContent="전송 완료 · CELL 1";await receive()}catch(err){console.error(err);document.getElementById("status").textContent="전송 실패: "+err.message}finally{button.disabled=false}});
-async function start(){await receive();setInterval(receive,500)}
-start();
-</script>
+	<h1>Virtual Wi-Fi Chat</h1>
+	<p>하나의 DB row를 가상 무선 매체처럼 사용하는 채팅 프로토타입</p>
+	<input id="mac" placeholder="내 MAC 주소">
+	<div id="status">Supabase에 자동 연결 중...</div>
+	<div id="messages"></div>
+	<form id="form"><input id="text" maxlength="500" placeholder="메시지"><button>전송</button></form>
+	<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+	<script>
+		const SUPABASE_URL='https://uhqdbmofvrontpgtzlxv.supabase.co';
+		const SUPABASE_KEY='sb_publishable_pY5uodEIyqFilDstsiV6zA_UUi2yDTz';
+		let sb=null;
+		let cell=[];
+		let channel=null;
+		const $=id=>document.getElementById(id);
+		$('mac').value=crypto.randomUUID().replaceAll('-','').slice(0,12).toUpperCase();
+		function render(){
+			$('messages').replaceChildren();
+			for(const frame of cell){
+				if(frame.type!=='DATA')continue;
+				const box=document.createElement('div');
+				box.className='message';
+				const meta=document.createElement('div');
+				meta.className='meta';
+				meta.textContent=frame.src+' • seq '+frame.seq;
+				const data=document.createElement('div');
+				data.textContent=frame.data;
+				box.append(meta,data);
+				$('messages').append(box);
+			}
+			$('messages').scrollTop=$('messages').scrollHeight;
+		}
+		async function readCell(){
+			const {data,error}=await sb.from('virtual_wifi').select('frames').eq('id',1).single();
+			if(error){$('status').textContent='셀 읽기 실패: '+error.message;return false;}
+			cell=data.frames||[];render();return true;
+		}
+		async function connect(){
+			sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+			if(!await readCell())return;
+			if(channel)await sb.removeChannel(channel);
+			channel=sb.channel('virtual-wifi-cell').on('postgres_changes',{event:'UPDATE',schema:'public',table:'virtual_wifi',filter:'id=eq.1'},payload=>{cell=payload.new.frames||[];render();}).subscribe(status=>{$('status').textContent=status==='SUBSCRIBED'?'가상 Wi-Fi 연결됨 • CELL 1':'Realtime: '+status;});
+		}
+		$('form').onsubmit=async e=>{
+			e.preventDefault();
+			if(!sb){$('status').textContent='아직 Supabase에 연결되지 않았습니다.';return;}
+			const text=$('text').value.trim();if(!text)return;
+			const frame={src:$('mac').value,dst:'FF:FF:FF:FF:FF:FF',type:'DATA',seq:Date.now(),data:text,ts:new Date().toISOString()};
+			const next=[...cell,frame].slice(-100);
+			const {error}=await sb.from('virtual_wifi').update({frames:next}).eq('id',1);
+			if(error){$('status').textContent='전송 실패: '+error.message;return;}
+			cell=next;render();$('text').value='';
+		};
+		connect();
+	</script>
 </body>
 </html>
