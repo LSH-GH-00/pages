@@ -1,164 +1,44 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Virtual Wi-Fi P2P Chat</title>
-	<style>
-		body { font-family: sans-serif; max-width: 800px; margin: 30px auto; padding: 0 15px; }
-		#status { padding: 10px; border: 1px solid #888; margin-bottom: 15px; }
-		#messages { border: 1px solid #888; min-height: 300px; padding: 10px; overflow-y: auto; }
-		.message { margin: 8px 0; padding: 8px; border-bottom: 1px solid #aaa; }
-		.meta { font-size: 0.8em; opacity: 0.7; }
-		#sendForm { display: flex; gap: 8px; margin-top: 15px; }
-		#message { flex: 1; padding: 10px; }
-		button { padding: 10px 15px; cursor: pointer; }
-		button:disabled { opacity: 0.5; }
-		code { word-break: break-all; }
-	</style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Virtual Wi-Fi P2P Chat</title>
+<style>
+body{font-family:sans-serif;max-width:800px;margin:30px auto;padding:0 15px}#status{padding:10px;border:1px solid #888;margin-bottom:15px}#messages{border:1px solid #888;min-height:300px;padding:10px;overflow-y:auto}.message{margin:8px 0;padding:8px;border-bottom:1px solid #aaa}.mine{background:#eee}.meta{font-size:.8em;opacity:.7}#sendForm{display:flex;gap:8px;margin-top:15px}#message{flex:1;padding:10px}button{padding:10px 15px}button:disabled{opacity:.5}code{word-break:break-all}
+</style>
 </head>
 <body>
-	<h1>Virtual Wi-Fi P2P Chat</h1>
-	<div id="status">연결 중...</div>
-	<p>Cell: <strong>1</strong></p>
-	<p>MAC: <code id="mac"></code></p>
-	<div id="messages"></div>
-	<form id="sendForm">
-		<input id="message" type="text" placeholder="메시지 입력" autocomplete="off" required>
-		<button type="submit">전송</button>
-	</form>
-
-	<script>
-		const SUPABASE_URL = "https://uhqdbmofvrontpgtzlxv.supabase.co";
-		const SUPABASE_KEY = "sb_publishable_pY5uodEIyqFilDstsiV6zA_UUi2yDTz";
-		const CELL_ID = 1;
-		const REST_URL = SUPABASE_URL + "/rest/v1/virtual_wifi";
-		const RPC_URL = SUPABASE_URL + "/rest/v1/rpc/virtual_wifi_append_frame";
-		const BROADCAST = "FF:FF:FF:FF:FF:FF";
-
-		let mac = localStorage.getItem("virtual_wifi_mac");
-		if (!mac) {
-			const bytes = crypto.getRandomValues(new Uint8Array(6));
-			mac = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join(":");
-			localStorage.setItem("virtual_wifi_mac", mac);
-		}
-		document.getElementById("mac").textContent = mac;
-
-		function headers() {
-			return {
-				"apikey": SUPABASE_KEY,
-				"Content-Type": "application/json",
-				"Accept": "application/json"
-			};
-		}
-
-		async function readCell() {
-			const response = await fetch(REST_URL + "?id=eq." + CELL_ID + "&select=id,frames", {
-			method: "GET",
-			headers: headers(),
-			cache: "no-store"
-		});
-			if (!response.ok) throw new Error("읽기 오류 " + response.status + ": " + await response.text());
-			const rows = await response.json();
-			if (!rows.length) throw new Error("CELL 1이 없습니다.");
-			return rows[0].frames || [];
-		}
-
-		async function sendFrame(frame) {
-			const response = await fetch(RPC_URL, {
-			method: "POST",
-			headers: headers(),
-			cache: "no-store",
-			body: JSON.stringify({ p_frame: frame })
-		});
-
-		const body = await response.text();
-		if (!response.ok) throw new Error("쓰기 오류 " + response.status + ": " + body);
-
-		let savedFrames;
-		try {
-			savedFrames = JSON.parse(body);
-		} catch (_) {
-			throw new Error("서버 응답을 읽을 수 없습니다: " + body);
-		}
-
-		if (!Array.isArray(savedFrames) || !savedFrames.some(saved => saved.sequence === frame.sequence)) {
-			throw new Error("CELL 1에 프레임이 저장되지 않았습니다.");
-		}
-	}
-
-		function showFrame(frame) {
-			if (!frame || frame.type !== "DATA" || frame.source === mac) return;
-			if (document.querySelector('[data-sequence="' + frame.sequence + '"]')) return;
-			const item = document.createElement("div");
-			item.className = "message";
-			item.dataset.sequence = frame.sequence;
-			const meta = document.createElement("div");
-			meta.className = "meta";
-			meta.textContent = frame.source + " · " + new Date(frame.time).toLocaleTimeString();
-			const text = document.createElement("div");
-			text.textContent = frame.data;
-			item.append(meta, text);
-			document.getElementById("messages").appendChild(item);
-			document.getElementById("messages").scrollTop = document.getElementById("messages").scrollHeight;
-		}
-
-		async function receiveFrames() {
-			try {
-				const frames = await readCell();
-				for (const frame of frames) showFrame(frame);
-			} catch (error) {
-				console.error(error);
-				document.getElementById("status").textContent = "수신 오류: " + error.message;
-			}
-		}
-
-		function makeFrame(data) {
-			return {
-				version: 1,
-				type: "DATA",
-				source: mac,
-				destination: BROADCAST,
-				sequence: crypto.randomUUID(),
-				data: data,
-				time: new Date().toISOString()
-			};
-		}
-
-		document.getElementById("sendForm").addEventListener("submit", async event => {
-			event.preventDefault();
-			const input = document.getElementById("message");
-			const text = input.value.trim();
-			if (!text) return;
-			const button = event.currentTarget.querySelector("button");
-			button.disabled = true;
-			document.getElementById("status").textContent = "전송 중...";
-			try {
-				await sendFrame(makeFrame(text));
-				input.value = "";
-				document.getElementById("status").textContent = "전송 완료 · CELL 1에 저장됨";
-				await receiveFrames();
-			} catch (error) {
-				console.error(error);
-				document.getElementById("status").textContent = "전송 실패: " + error.message;
-			} finally {
-				button.disabled = false;
-			}
-		});
-
-		async function start() {
-			try {
-				await readCell();
-				document.getElementById("status").textContent = "연결됨 · Virtual Wi-Fi CELL 1";
-				await receiveFrames();
-				setInterval(receiveFrames, 1000);
-			} catch (error) {
-				console.error(error);
-				document.getElementById("status").textContent = "연결 실패: " + error.message;
-			}
-		}
-
-		start();
-	</script>
+<h1>Virtual Wi-Fi P2P Chat</h1>
+<div id="status">연결 중...</div>
+<p>Cell: <strong>1</strong></p>
+<p>MAC: <code id="mac"></code></p>
+<div id="messages"></div>
+<form id="sendForm">
+<input id="message" type="text" placeholder="메시지 입력" autocomplete="off" required>
+<button type="submit">전송</button>
+</form>
+<script>
+const SUPABASE_URL="https://uhqdbmofvrontpgtzlxv.supabase.co";
+const SUPABASE_KEY="sb_publishable_pY5uodEIyqFilDstsiV6zA_UUi2yDTz";
+const CELL_ID=1;
+const REST_URL=SUPABASE_URL+"/rest/v1/virtual_wifi";
+const RPC_URL=SUPABASE_URL+"/rest/v1/rpc/append_virtual_wifi_frame";
+const BROADCAST="FF:FF:FF:FF:FF:FF";
+const macKey="virtual_wifi_mac";
+let mac=localStorage.getItem(macKey);
+if(!mac){const b=crypto.getRandomValues(new Uint8Array(6));mac=Array.from(b).map(x=>x.toString(16).padStart(2,"0")).join(":");localStorage.setItem(macKey,mac)}
+document.getElementById("mac").textContent=mac;
+const seen=new Set();
+function headers(){return {apikey:SUPABASE_KEY,"Content-Type":"application/json",Accept:"application/json"}}
+async function readCell(){const r=await fetch(REST_URL+"?id=eq."+CELL_ID+"&select=id,frames&_="+Date.now(),{headers:headers(),cache:"no-store"});if(!r.ok)throw Error("읽기 오류 "+r.status+": "+await r.text());const a=await r.json();if(!a.length)throw Error("CELL 1이 없습니다.");return a[0].frames||[]}
+function frameId(f){return f&&f.sequence?String(f.sequence):JSON.stringify(f)}
+function showFrame(f){if(!f||f.type!=="DATA")return;const id=frameId(f);if(seen.has(id))return;seen.add(id);const item=document.createElement("div");item.className="message"+(f.source===mac?" mine":"");const meta=document.createElement("div");meta.className="meta";meta.textContent=(f.source===mac?"나":"상대")+" · "+f.source+" · "+new Date(f.time).toLocaleTimeString();const text=document.createElement("div");text.textContent=f.data;item.append(meta,text);document.getElementById("messages").appendChild(item);const box=document.getElementById("messages");box.scrollTop=box.scrollHeight}
+async function receive(){try{const frames=await readCell();for(const f of frames)showFrame(f);document.getElementById("status").textContent="연결됨 · Virtual Wi-Fi CELL 1"}catch(e){console.error(e);document.getElementById("status").textContent="수신 오류: "+e.message}}
+async function sendFrame(f){const r=await fetch(RPC_URL,{method:"POST",headers:headers(),body:JSON.stringify({p_frame:f})});const body=await r.text();if(!r.ok)throw Error("전송 오류 "+r.status+": "+body);let result;try{result=body?JSON.parse(body):null}catch(e){}if(result===false)throw Error("서버가 프레임 추가를 거부했습니다.")}
+document.getElementById("sendForm").addEventListener("submit",async e=>{e.preventDefault();const input=document.getElementById("message"),button=e.currentTarget.querySelector("button"),text=input.value.trim();if(!text)return;button.disabled=true;document.getElementById("status").textContent="전송 중...";const f={version:1,type:"DATA",source:mac,destination:BROADCAST,sequence:crypto.randomUUID(),data:text,time:new Date().toISOString()};try{await sendFrame(f);showFrame(f);input.value="";document.getElementById("status").textContent="전송 완료 · CELL 1";await receive()}catch(err){console.error(err);document.getElementById("status").textContent="전송 실패: "+err.message}finally{button.disabled=false}});
+async function start(){await receive();setInterval(receive,500)}
+start();
+</script>
 </body>
 </html>
