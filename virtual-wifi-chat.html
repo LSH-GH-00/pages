@@ -33,6 +33,7 @@
 		const SUPABASE_KEY = "sb_publishable_pY5uodEIyqFilDstsiV6zA_UUi2yDTz";
 		const CELL_ID = 1;
 		const REST_URL = SUPABASE_URL + "/rest/v1/virtual_wifi";
+		const RPC_URL = SUPABASE_URL + "/rest/v1/rpc/virtual_wifi_append_frame";
 		const BROADCAST = "FF:FF:FF:FF:FF:FF";
 
 		let mac = localStorage.getItem("virtual_wifi_mac");
@@ -47,8 +48,7 @@
 			return {
 				"apikey": SUPABASE_KEY,
 				"Content-Type": "application/json",
-				"Accept": "application/json",
-				"Prefer": "return=representation"
+				"Accept": "application/json"
 			};
 		}
 
@@ -64,42 +64,28 @@
 			return rows[0].frames || [];
 		}
 
-		async function writeCell(frames) {
-			const response = await fetch(REST_URL + "?id=eq." + CELL_ID, {
-			method: "PATCH",
+		async function sendFrame(frame) {
+			const response = await fetch(RPC_URL, {
+			method: "POST",
 			headers: headers(),
 			cache: "no-store",
-			body: JSON.stringify({ frames: frames })
+			body: JSON.stringify({ p_frame: frame })
 		});
 
 		const body = await response.text();
-		if (!response.ok) {
-			throw new Error("쓰기 오류 " + response.status + ": " + body);
-		}
+		if (!response.ok) throw new Error("쓰기 오류 " + response.status + ": " + body);
 
-		let rows = [];
+		let savedFrames;
 		try {
-			rows = body ? JSON.parse(body) : [];
-		} catch (_) {}
-
-		if (!Array.isArray(rows) || rows.length !== 1) {
-			throw new Error("CELL 1이 실제로 변경되지 않았습니다. 업데이트된 행: " + rows.length);
+			savedFrames = JSON.parse(body);
+		} catch (_) {
+			throw new Error("서버 응답을 읽을 수 없습니다: " + body);
 		}
 
-		return rows[0].frames || [];
+		if (!Array.isArray(savedFrames) || !savedFrames.some(saved => saved.sequence === frame.sequence)) {
+			throw new Error("CELL 1에 프레임이 저장되지 않았습니다.");
 		}
-
-		function makeFrame(data) {
-			return {
-				version: 1,
-				type: "DATA",
-				source: mac,
-				destination: BROADCAST,
-				sequence: crypto.randomUUID(),
-				data: data,
-				time: new Date().toISOString()
-			};
-		}
+	}
 
 		function showFrame(frame) {
 			if (!frame || frame.type !== "DATA" || frame.source === mac) return;
@@ -127,14 +113,16 @@
 			}
 		}
 
-		async function sendFrame(frame) {
-			const frames = await readCell();
-			frames.push(frame);
-			if (frames.length > 100) frames.splice(0, frames.length - 100);
-			const savedFrames = await writeCell(frames);
-			if (!savedFrames.some(saved => saved.sequence === frame.sequence)) {
-				throw new Error("서버가 전송한 프레임을 확인하지 못했습니다.");
-			}
+		function makeFrame(data) {
+			return {
+				version: 1,
+				type: "DATA",
+				source: mac,
+				destination: BROADCAST,
+				sequence: crypto.randomUUID(),
+				data: data,
+				time: new Date().toISOString()
+			};
 		}
 
 		document.getElementById("sendForm").addEventListener("submit", async event => {
@@ -149,6 +137,7 @@
 				await sendFrame(makeFrame(text));
 				input.value = "";
 				document.getElementById("status").textContent = "전송 완료 · CELL 1에 저장됨";
+				await receiveFrames();
 			} catch (error) {
 				console.error(error);
 				document.getElementById("status").textContent = "전송 실패: " + error.message;
