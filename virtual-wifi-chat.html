@@ -13,6 +13,7 @@
 		#sendForm { display: flex; gap: 8px; margin-top: 15px; }
 		#message { flex: 1; padding: 10px; }
 		button { padding: 10px 15px; cursor: pointer; }
+		button:disabled { opacity: 0.5; }
 		code { word-break: break-all; }
 	</style>
 </head>
@@ -46,35 +47,46 @@
 			return {
 				"apikey": SUPABASE_KEY,
 				"Content-Type": "application/json",
-				"Accept": "application/json"
+				"Accept": "application/json",
+				"Prefer": "return=representation"
 			};
 		}
 
 		async function readCell() {
-			const response = await fetch(
-				REST_URL + "?id=eq." + CELL_ID + "&select=id,frames",
-				{ method: "GET", headers: headers() }
-			);
-			if (!response.ok) {
-				throw new Error("읽기 오류 " + response.status + ": " + await response.text());
-			}
+			const response = await fetch(REST_URL + "?id=eq." + CELL_ID + "&select=id,frames", {
+			method: "GET",
+			headers: headers(),
+			cache: "no-store"
+		});
+			if (!response.ok) throw new Error("읽기 오류 " + response.status + ": " + await response.text());
 			const rows = await response.json();
 			if (!rows.length) throw new Error("CELL 1이 없습니다.");
 			return rows[0].frames || [];
 		}
 
 		async function writeCell(frames) {
-			const response = await fetch(
-				REST_URL + "?id=eq." + CELL_ID,
-				{
-					method: "PATCH",
-					headers: headers(),
-					body: JSON.stringify({ frames: frames })
-				}
-			);
-			if (!response.ok) {
-				throw new Error("쓰기 오류 " + response.status + ": " + await response.text());
-			}
+			const response = await fetch(REST_URL + "?id=eq." + CELL_ID, {
+			method: "PATCH",
+			headers: headers(),
+			cache: "no-store",
+			body: JSON.stringify({ frames: frames })
+		});
+
+		const body = await response.text();
+		if (!response.ok) {
+			throw new Error("쓰기 오류 " + response.status + ": " + body);
+		}
+
+		let rows = [];
+		try {
+			rows = body ? JSON.parse(body) : [];
+		} catch (_) {}
+
+		if (!Array.isArray(rows) || rows.length !== 1) {
+			throw new Error("CELL 1이 실제로 변경되지 않았습니다. 업데이트된 행: " + rows.length);
+		}
+
+		return rows[0].frames || [];
 		}
 
 		function makeFrame(data) {
@@ -102,7 +114,8 @@
 			text.textContent = frame.data;
 			item.append(meta, text);
 			document.getElementById("messages").appendChild(item);
-	}
+			document.getElementById("messages").scrollTop = document.getElementById("messages").scrollHeight;
+		}
 
 		async function receiveFrames() {
 			try {
@@ -118,7 +131,10 @@
 			const frames = await readCell();
 			frames.push(frame);
 			if (frames.length > 100) frames.splice(0, frames.length - 100);
-			await writeCell(frames);
+			const savedFrames = await writeCell(frames);
+			if (!savedFrames.some(saved => saved.sequence === frame.sequence)) {
+				throw new Error("서버가 전송한 프레임을 확인하지 못했습니다.");
+			}
 		}
 
 		document.getElementById("sendForm").addEventListener("submit", async event => {
@@ -128,13 +144,14 @@
 			if (!text) return;
 			const button = event.currentTarget.querySelector("button");
 			button.disabled = true;
+			document.getElementById("status").textContent = "전송 중...";
 			try {
 				await sendFrame(makeFrame(text));
 				input.value = "";
-				document.getElementById("status").textContent = "전송 완료 · CELL 1";
+				document.getElementById("status").textContent = "전송 완료 · CELL 1에 저장됨";
 			} catch (error) {
 				console.error(error);
-				document.getElementById("status").textContent = "전송 오류: " + error.message;
+				document.getElementById("status").textContent = "전송 실패: " + error.message;
 			} finally {
 				button.disabled = false;
 			}
